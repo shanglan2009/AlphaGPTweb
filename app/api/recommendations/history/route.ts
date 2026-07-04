@@ -1,10 +1,23 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getSQL } from "@/lib/db/neon";
+import { hasDatabase, mockDailyPicks } from "@/lib/db/mock";
 
 export async function GET(req: NextRequest) {
   try {
     const { searchParams } = new URL(req.url);
     const limit = Math.min(Number(searchParams.get("limit")) || 50, 200);
+
+    if (!hasDatabase()) {
+      const today = new Date().toISOString().slice(0, 10);
+      const all: ReturnType<typeof mockDailyPicks>[] = [];
+      for (let i = 0; i < Math.min(limit, 10); i++) {
+        const d = new Date();
+        d.setDate(d.getDate() - i * 3);
+        all.push(mockDailyPicks(d.toISOString().slice(0, 10)));
+      }
+      return NextResponse.json({ success: true, data: all.flat().slice(0, limit), timestamp: new Date().toISOString() });
+    }
+
+    const { getSQL } = await import("@/lib/db/neon");
     const sql = getSQL();
     const result = await sql`SELECT * FROM daily_picks ORDER BY date DESC, rank ASC LIMIT ${limit}`;
     const rows = result as unknown as Record<string, unknown>[];
