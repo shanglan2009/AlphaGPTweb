@@ -2,53 +2,68 @@ name: Daily Stock Picks
 
 on:
   schedule:
-    # 北京时间每个交易日 16:00 (UTC+8 → UTC 08:00)
     - cron: "0 8 * * 1-5"
-  workflow_dispatch:  # 支持手动触发
+  workflow_dispatch:
 
 env:
   PYTHON_VERSION: "3.12"
-  DATABASE_URL: ${{ secrets.DATABASE_URL }}
-  UPSTASH_REDIS_REST_URL: ${{ secrets.UPSTASH_REDIS_REST_URL }}
-  UPSTASH_REDIS_REST_TOKEN: ${{ secrets.UPSTASH_REDIS_REST_TOKEN }}
-  TUSHARE_TOKEN: ${{ secrets.TUSHARE_TOKEN }}
-  TICKFLOW_API_KEY: ${{ secrets.TICKFLOW_API_KEY }}
 
 jobs:
   daily-picks:
     runs-on: ubuntu-latest
     timeout-minutes: 30
-
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup Python
-        uses: actions/setup-python@v5
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
-
-      - name: Cache Python dependencies
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/pip
-          key: pip-${{ runner.os }}-${{ hashFiles('requirements.txt') }}
-
       - name: Install dependencies
+        run: pip install numpy psycopg2-binary python-dotenv
+      - name: Generate daily picks
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
         run: |
-          pip install -r requirements.txt
-          pip install baostock  # 免费数据源
+          python3 -c "
+import os, numpy as np, psycopg2
+from datetime import datetime
+conn = psycopg2.connect(os.environ['DATABASE_URL'])
+cur = conn.cursor()
+cur.execute(\"\"\"SELECT ts_code, trade_date, close, volume FROM daily_ohlcv WHERE trade_date >= CURRENT_DATE - INTERVAL '60 days' ORDER BY ts_code, trade_date\"\"\")
+rows = cur.fetchall()
+data = {}
+for r in rows:
+    c = r[0]
+    if c not in data: data[c] = {'close':[],'volume':[]}
+    data[c]['close'].append(float(r[2]))
+    data[c]['volume'].append(float(r[3]))
 
-      - name: Run daily pipeline
-        run: |
-          cd python
-          python scheduler/daily_job.py
+scores = []
+for code, d in data.items():
+    cl = np.array(d['close'])
+    vl = np.array(d['volume'])
+    if len(cl) < 20: continue
+    m5 = (cl[-1]-cl[-6])/(cl[-6]+1e-9) if len(cl)>=6 else 0
+    m20 = (cl[-1]-cl[-21])/(cl[-21]+1e-9) if len(cl)>=21 else 0
+    vr = min(vl[-1]/(np.mean(vl[-6:-1])+1e-9), 5)
+    delta = np.diff(cl)
+    g = np.where(delta>0,delta,0)
+    l = np.where(delta<0,-delta,0)
+    rsi = 100-100/(1+(np.mean(g[-14:])+1e-9)/(np.mean(l[-14:])+1e-9))
+    trend = float(np.tanh(np.polyfit(np.arange(20),cl[-20:],1)[0]/(cl[-20]+1e-9)*100))
+    rev = 1.0 if len(cl)>=3 and (cl[-2]-cl[-3])/(cl[-3]+1e-9)<-0.02 and cl[-1]>cl[-2] else 0
+    liq = np.log1p(vl[-1]*cl[-1])
+    sc = 0.20*m5 + 0.10*m20 - 0.15*np.std(np.diff(cl[-6:])/(cl[-7:-1]+1e-9)) + 0.15*(vr-1) + 0.10*((rsi-50)/50) + 0.15*trend + 0.05*rev + 0.10*(liq/1e6)
+    cf = min(max(abs(sc)/0.3,0.5),0.95)
+    pr = float(np.clip(sc*0.01,-0.1,0.1))
+    scores.append((code,pr,cf,f'{m5*100:.1f}% vol:{vr:.1f} RSI:{rsi:.0f}'))
 
-      - name: Commit picks result
-        if: success()
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add python/data/ 2>/dev/null || true
-          git diff --staged --quiet || git commit -m "📊 Daily picks $(date +%Y-%m-%d)"
-          git push
+scores.sort(key=lambda x: x[1], reverse=True)
+today = datetime.now().strftime('%Y-%m-%d')
+for i,s in enumerate(scores[:20]):
+    cur.execute(\"\"\"INSERT INTO daily_picks (date,stock_code,stock_name,predicted_return,confidence,rank,reason,model_version) VALUES (%s,%s,%s,%s,%s,%s,%s,'v1') ON CONFLICT (date,stock_code) DO UPDATE SET predicted_return=EXCLUDED.predicted_return,confidence=EXCLUDED.confidence,rank=EXCLUDED.rank,reason=EXCLUDED.reason\"\"\",(today,s[0],s[0],round(s[1],4),round(s[2],2),i+1,s[3]))
+conn.commit()
+cur.close(); conn.close()
+print(f'Generated {len(scores[:20])} picks for {today}')
+for i,s in enumerate(scores[:5]):
+    print(f'  #{i+1} {s[0]:12s} pred:{s[1]:+.2%} conf:{s[2]:.0%}')
+"

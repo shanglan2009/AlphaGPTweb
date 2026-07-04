@@ -2,18 +2,16 @@ name: Data Collection
 
 on:
   schedule:
-    # 每个交易日 15:30 收盘后采集
-    - cron: "30 7 * * 1-5"
+    - cron: "30 7 * * 1-5"   # 北京时间 15:30
   workflow_dispatch:
 
 env:
   PYTHON_VERSION: "3.12"
-  DATABASE_URL: ${{ secrets.DATABASE_URL }}
 
 jobs:
   collect-data:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
 
     steps:
       - name: Checkout
@@ -25,44 +23,93 @@ jobs:
           python-version: ${{ env.PYTHON_VERSION }}
 
       - name: Install dependencies
-        run: |
-          pip install pandas requests python-dotenv psycopg2-binary baostock
+        run: pip install pandas requests python-dotenv psycopg2-binary baostock
 
-      - name: Collect daily data
+      - name: Collect daily OHLCV data
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
         run: |
-          cd python
-          python -c "
-          from data_pipeline.pipeline import run_pipeline
-          run_pipeline()
-          "
+          python3 << 'PYEOF'
+          import os, baostock as bs, psycopg2
+          from datetime import datetime, timedelta
+
+          url = os.environ["DATABASE_URL"]
+          if not url:
+              print("ERROR: DATABASE_URL not set")
+              exit(1)
+
+          bs.login()
+          conn = psycopg2.connect(url)
+          cur = conn.cursor()
+
+          # Get stock list
+          stocks = []
+          rs = bs.query_stock_basic()
+          while rs.next():
+              row = rs.get_row_data()
+              if row[0].startswith(("sh.", "sz.")):
+                  code = row[0].split(".")
+                  ts_code = f"{code[1].upper()}.{code[0].upper()}"
+                  stocks.append(ts_code)
+          bs.logout()
+          print(f"Stock list: {len(stocks)} stocks")
+
+          end = datetime.now().strftime("%Y-%m-%d")
+          start = (datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d")
+
+          bs.login()
+          total = 0
+          for i, ts_code in enumerate(stocks):
+              parts = ts_code.split(".")
+              bsc = f"{parts[1].lower()}.{parts[0]}"
+              try:
+                  rs = bs.query_history_k_data_plus(
+                      bsc, "date,open,high,low,close,preclose,volume,amount",
+                      start_date=start, end_date=end, frequency="d", adjustflag="2"
+                  )
+                  batch = []
+                  while rs.next():
+                      r = rs.get_row_data()
+                      batch.append((ts_code, r[0], float(r[1]), float(r[2]), float(r[3]),
+                                    float(r[4]), float(r[5]), float(r[6]), float(r[7])))
+                  for b in batch:
+                      cur.execute("""
+                          INSERT INTO daily_ohlcv VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                          ON CONFLICT DO NOTHING
+                      """, b)
+                  total += len(batch)
+              except Exception:
+                  pass
+              if (i + 1) % 500 == 0:
+                  conn.commit()
+                  print(f"  Progress: {i+1}/{len(stocks)}, {total} rows")
+
+          conn.commit()
+          bs.logout()
+          cur.close(); conn.close()
+          print(f"Done: {total} rows written")
+          PYEOF
 
       - name: Update win rate stats
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
         run: |
-          cd python
-          python -c "
+          python3 << 'PYEOF'
           import os, psycopg2
-          db = os.getenv('DATABASE_URL')
-          if db:
-              conn = psycopg2.connect(db)
-              cur = conn.cursor()
-              cur.execute('''
-                  INSERT INTO win_rate_cache (date, daily_win_rate, monthly_win_rate, total_picks, wins, month_picks, month_wins)
-                  SELECT
-                      CURRENT_DATE - 1,
-                      COALESCE(SUM(CASE WHEN is_win THEN 1 ELSE 0 END)::float / NULLIF(COUNT(*), 0), 0),
-                      COALESCE(SUM(CASE WHEN is_win AND date >= date_trunc('month', CURRENT_DATE) THEN 1 ELSE 0 END)::float / NULLIF(COUNT(*) FILTER (WHERE date >= date_trunc('month', CURRENT_DATE)), 0), 0),
-                      COUNT(*),
-                      COALESCE(SUM(CASE WHEN is_win THEN 1 ELSE 0 END), 0),
-                      COUNT(*) FILTER (WHERE date >= date_trunc('month', CURRENT_DATE)),
-                      COALESCE(SUM(CASE WHEN is_win AND date >= date_trunc('month', CURRENT_DATE) THEN 1 ELSE 0 END), 0)
-                  FROM pick_outcomes WHERE date = CURRENT_DATE - 1
-                  ON CONFLICT (date) DO UPDATE SET
-                      daily_win_rate = EXCLUDED.daily_win_rate,
-                      monthly_win_rate = EXCLUDED.monthly_win_rate,
-                      total_picks = EXCLUDED.total_picks,
-                      wins = EXCLUDED.wins
-              ''')
-              conn.commit()
-              cur.close()
-              conn.close()
-          "
+          from datetime import datetime, timedelta
+          conn = psycopg2.connect(os.environ["DATABASE_URL"])
+          cur = conn.cursor()
+          yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
+          cur.execute("""
+              INSERT INTO win_rate_cache (date, daily_win_rate, monthly_win_rate, total_picks, wins, month_picks, month_wins)
+              SELECT %s,
+                  COALESCE(SUM(CASE WHEN is_win THEN 1 ELSE 0 END)::float / NULLIF(COUNT(*), 0), 0),
+                  0, COUNT(*), COALESCE(SUM(CASE WHEN is_win THEN 1 ELSE 0 END), 0), 0, 0
+              FROM pick_outcomes WHERE date = %s
+              ON CONFLICT (date) DO UPDATE SET
+                  daily_win_rate = EXCLUDED.daily_win_rate, total_picks = EXCLUDED.total_picks, wins = EXCLUDED.wins
+          """, (yesterday, yesterday))
+          conn.commit()
+          cur.close(); conn.close()
+          print("Win rate updated for", yesterday)
+          PYEOF
