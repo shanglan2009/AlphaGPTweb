@@ -1,0 +1,68 @@
+name: Data Collection
+
+on:
+  schedule:
+    # 每个交易日 15:30 收盘后采集
+    - cron: "30 7 * * 1-5"
+  workflow_dispatch:
+
+env:
+  PYTHON_VERSION: "3.12"
+  DATABASE_URL: ${{ secrets.DATABASE_URL }}
+
+jobs:
+  collect-data:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install dependencies
+        run: |
+          pip install pandas requests python-dotenv psycopg2-binary baostock
+
+      - name: Collect daily data
+        run: |
+          cd python
+          python -c "
+          from data_pipeline.pipeline import run_pipeline
+          run_pipeline()
+          "
+
+      - name: Update win rate stats
+        run: |
+          cd python
+          python -c "
+          import os, psycopg2
+          db = os.getenv('DATABASE_URL')
+          if db:
+              conn = psycopg2.connect(db)
+              cur = conn.cursor()
+              cur.execute('''
+                  INSERT INTO win_rate_cache (date, daily_win_rate, monthly_win_rate, total_picks, wins, month_picks, month_wins)
+                  SELECT
+                      CURRENT_DATE - 1,
+                      COALESCE(SUM(CASE WHEN is_win THEN 1 ELSE 0 END)::float / NULLIF(COUNT(*), 0), 0),
+                      COALESCE(SUM(CASE WHEN is_win AND date >= date_trunc('month', CURRENT_DATE) THEN 1 ELSE 0 END)::float / NULLIF(COUNT(*) FILTER (WHERE date >= date_trunc('month', CURRENT_DATE)), 0), 0),
+                      COUNT(*),
+                      COALESCE(SUM(CASE WHEN is_win THEN 1 ELSE 0 END), 0),
+                      COUNT(*) FILTER (WHERE date >= date_trunc('month', CURRENT_DATE)),
+                      COALESCE(SUM(CASE WHEN is_win AND date >= date_trunc('month', CURRENT_DATE) THEN 1 ELSE 0 END), 0)
+                  FROM pick_outcomes WHERE date = CURRENT_DATE - 1
+                  ON CONFLICT (date) DO UPDATE SET
+                      daily_win_rate = EXCLUDED.daily_win_rate,
+                      monthly_win_rate = EXCLUDED.monthly_win_rate,
+                      total_picks = EXCLUDED.total_picks,
+                      wins = EXCLUDED.wins
+              ''')
+              conn.commit()
+              cur.close()
+              conn.close()
+          "
