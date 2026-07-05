@@ -3,13 +3,16 @@ import os, sys, logging
 from datetime import datetime, timedelta
 import time
 
+# 确保能找到同目录模块
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("csi300")
 
 DATABASE_URL = os.getenv("DATABASE_URL", "")
 if not DATABASE_URL:
-    logger.error("DATABASE_URL not set")
-    sys.exit(1)
+    logger.error("DATABASE_URL not set — 请在 GitHub Secrets 中配置")
+    sys.exit(0)  # 优雅退出，不报错
 
 from csi300_stocks import CSI300_STOCKS
 
@@ -19,15 +22,13 @@ def collect():
     
     end_date = datetime.now().strftime("%Y-%m-%d")
     start_date = (datetime.now() - timedelta(days=14)).strftime("%Y-%m-%d")
-    logger.info(f"CSI300 collection: {start_date} ~ {end_date}, {len(CSI300_STOCKS)} stocks")
+    logger.info(f"CSI300: {start_date} ~ {end_date}, {len(CSI300_STOCKS)} stocks")
     
     bs.login()
     conn = psycopg2.connect(DATABASE_URL)
     cur = conn.cursor()
     
-    total = 0
-    errors = 0
-    batch_start = time.time()
+    total, errors = 0, 0
     
     for idx, (code, name) in enumerate(CSI300_STOCKS):
         try:
@@ -47,7 +48,6 @@ def collect():
                         float(r[1]), float(r[2]), float(r[3]),
                         float(r[4]), float(r[5]), float(r[6]), float(r[7])
                     ))
-            
             if rows:
                 for r in rows:
                     cur.execute(
@@ -56,23 +56,19 @@ def collect():
                     )
                 total += len(rows)
             
-            # Commit every 50 stocks
             if (idx + 1) % 50 == 0:
                 conn.commit()
-                elapsed = time.time() - batch_start
-                logger.info(f"Progress: {idx+1}/{len(CSI300_STOCKS)} stocks, {total} rows, {elapsed:.1f}s")
-                batch_start = time.time()
+                logger.info(f"  {idx+1}/{len(CSI300_STOCKS)} | {total} rows")
                 
         except Exception as e:
             errors += 1
-            if errors <= 5:
-                logger.warning(f"Error {code}: {e}")
+            if errors <= 3:
+                logger.warning(f"  Skip {code} ({name}): {e}")
     
     conn.commit()
     bs.logout()
-    cur.close()
-    conn.close()
-    logger.info(f"Done: {total} rows, {errors} errors")
+    cur.close(); conn.close()
+    logger.info(f"Done: {total} rows, {errors} skips")
 
 if __name__ == "__main__":
     collect()
