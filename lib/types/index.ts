@@ -160,6 +160,8 @@ export interface RiskMetrics {
 export interface QQBotConfig {
   id: string;
   bot_qq: string;
+  qq_number: string;
+  qmsg_key: string;
   webhook_url: string;
   enabled: boolean;
   push_schedule: PushSchedule;

@@ -206,7 +206,7 @@ export function mockPushStrategies(): PushStrategy[] {
 /** QQ 机器人配置 Mock */
 export function mockQQBotConfig(): QQBotConfig {
   return {
-    id: "default", bot_qq: "", webhook_url: "", enabled: false,
+    id: "default", bot_qq: "1905018758", qq_number: "1905018758", qmsg_key: "PvRyV3cBlLwX9ufRD0ocRG6wneWPIC61", webhook_url: "", enabled: false,
     push_schedule: { days: [1, 2, 3, 4, 5], time: "08:30", timezone: "Asia/Shanghai" },
     filter_min_confidence: 0.6, max_stocks_per_push: 5,
   };
