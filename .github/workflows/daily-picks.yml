@@ -1,4 +1,4 @@
-name: Daily Stock Picks
+name: Daily Stock Picks + Push
 
 on:
   schedule:
@@ -11,8 +11,9 @@ jobs:
     timeout-minutes: 10
 
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-python@v6
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
 
@@ -22,9 +23,61 @@ jobs:
       - name: Generate picks
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: python python/model/inference_csi300.py
+
+      - name: Push to QQ
+        if: success()
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
         run: |
-          if [ -z "$DATABASE_URL" ]; then
-            echo "SKIP: DATABASE_URL not configured"
-            exit 0
-          fi
-          python python/model/inference_csi300.py
+          python3 << 'PYPUSH'
+import os, json, requests
+DATABASE_URL = os.getenv("DATABASE_URL")
+if not DATABASE_URL:
+    print("DATABASE_URL not set, skip push")
+    exit(0)
+
+import psycopg2, datetime
+conn = psycopg2.connect(DATABASE_URL)
+cur = conn.cursor()
+today = datetime.date.today().isoformat()
+
+# Get QQ config
+cur.execute("SELECT qq_number, qmsg_key, enabled FROM qq_bot_config ORDER BY id DESC LIMIT 1")
+config = cur.fetchone()
+if not config or not config[2]:
+    print("Push not enabled")
+    cur.close(); conn.close(); exit(0)
+
+qq_number, qmsg_key, _ = config
+if not qmsg_key:
+    print("Qmsg key not set")
+    cur.close(); conn.close(); exit(0)
+
+# Get daily picks
+cur.execute("SELECT rank, stock_name, stock_code, predicted_return, confidence, reason FROM daily_picks WHERE date = %s::date ORDER BY rank ASC LIMIT 5", (today,))
+picks = cur.fetchall()
+
+if not picks:
+    print("No picks for today")
+    cur.close(); conn.close(); exit(0)
+
+# Format message
+lines = ["📊 AlphaGPT 每日荐股", ""]
+for p in picks:
+    arrow = "📈" if p[3] > 0 else "📉"
+    code = p[2].replace(".SH","").replace(".SZ","").replace(".BJ","")
+    lines.append(f"{arrow} #{p[0]} {p[1]}({code})")
+    lines.append(f"   预测: {p[3]*100:.1f}%  置信: {p[4]*100:.0f}%")
+    lines.append("")
+
+lines.append(f"⏰ {datetime.datetime.now().strftime('%Y-%m-%d %H:%M')}")
+msg = "\n".join(lines)
+
+# Send via Qmsg
+url = f"https://qmsg.zendee.cn/send/{qmsg_key}"
+resp = requests.get(url, params={"msg": msg, "qq": qq_number})
+print(f"Push result: {resp.json()}")
+
+cur.close(); conn.close()
+PYPUSH
