@@ -1,4 +1,4 @@
-name: Data Collection
+name: Daily Data Collection (CSI300)
 
 on:
   schedule:
@@ -9,107 +9,27 @@ env:
   PYTHON_VERSION: "3.12"
 
 jobs:
-  collect-data:
+  collect:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 15
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Setup Python
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
 
-      - name: Install dependencies
-        run: pip install pandas requests python-dotenv psycopg2-binary baostock
+      - name: Install deps
+        run: pip install pandas requests python-dotenv psycopg2-binary baostock numpy
 
-      - name: Collect daily OHLCV data
+      - name: Collect CSI300 daily data
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
-        run: |
-          python3 << 'PYEOF'
-          import os, baostock as bs, psycopg2
-          from datetime import datetime, timedelta
+        run: python python/data_pipeline/collect_csi300.py
 
-          url = os.environ["DATABASE_URL"]
-          if not url:
-              print("ERROR: DATABASE_URL not set")
-              exit(1)
-
-          bs.login()
-          conn = psycopg2.connect(url)
-          cur = conn.cursor()
-
-          # Get stock list
-          stocks = []
-          rs = bs.query_stock_basic()
-          while rs.next():
-              row = rs.get_row_data()
-              if row[0].startswith(("sh.", "sz.")):
-                  code = row[0].split(".")
-                  ts_code = f"{code[1].upper()}.{code[0].upper()}"
-                  stocks.append(ts_code)
-          bs.logout()
-          print(f"Stock list: {len(stocks)} stocks")
-
-          end = datetime.now().strftime("%Y-%m-%d")
-          start = (datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d")
-
-          bs.login()
-          total = 0
-          for i, ts_code in enumerate(stocks):
-              parts = ts_code.split(".")
-              bsc = f"{parts[1].lower()}.{parts[0]}"
-              try:
-                  rs = bs.query_history_k_data_plus(
-                      bsc, "date,open,high,low,close,preclose,volume,amount",
-                      start_date=start, end_date=end, frequency="d", adjustflag="2"
-                  )
-                  batch = []
-                  while rs.next():
-                      r = rs.get_row_data()
-                      batch.append((ts_code, r[0], float(r[1]), float(r[2]), float(r[3]),
-                                    float(r[4]), float(r[5]), float(r[6]), float(r[7])))
-                  for b in batch:
-                      cur.execute("""
-                          INSERT INTO daily_ohlcv VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)
-                          ON CONFLICT DO NOTHING
-                      """, b)
-                  total += len(batch)
-              except Exception:
-                  pass
-              if (i + 1) % 500 == 0:
-                  conn.commit()
-                  print(f"  Progress: {i+1}/{len(stocks)}, {total} rows")
-
-          conn.commit()
-          bs.logout()
-          cur.close(); conn.close()
-          print(f"Done: {total} rows written")
-          PYEOF
-
-      - name: Update win rate stats
+      - name: Run inference
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
-        run: |
-          python3 << 'PYEOF'
-          import os, psycopg2
-          from datetime import datetime, timedelta
-          conn = psycopg2.connect(os.environ["DATABASE_URL"])
-          cur = conn.cursor()
-          yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
-          cur.execute("""
-              INSERT INTO win_rate_cache (date, daily_win_rate, monthly_win_rate, total_picks, wins, month_picks, month_wins)
-              SELECT %s,
-                  COALESCE(SUM(CASE WHEN is_win THEN 1 ELSE 0 END)::float / NULLIF(COUNT(*), 0), 0),
-                  0, COUNT(*), COALESCE(SUM(CASE WHEN is_win THEN 1 ELSE 0 END), 0), 0, 0
-              FROM pick_outcomes WHERE date = %s
-              ON CONFLICT (date) DO UPDATE SET
-                  daily_win_rate = EXCLUDED.daily_win_rate, total_picks = EXCLUDED.total_picks, wins = EXCLUDED.wins
-          """, (yesterday, yesterday))
-          conn.commit()
-          cur.close(); conn.close()
-          print("Win rate updated for", yesterday)
-          PYEOF
+        run: python python/model/inference_csi300.py
