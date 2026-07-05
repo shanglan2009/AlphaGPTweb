@@ -61,9 +61,9 @@ def run():
     cur.execute("SELECT ts_code, trade_date, close, vol FROM daily_ohlcv WHERE trade_date >= CURRENT_DATE - INTERVAL '60 days' ORDER BY ts_code, trade_date")
     stock_data = {}
     for code, dt, cl, vol in cur.fetchall():
-        if code not in stock_data: stock_data[code] = {"close":[],"volume":[]}
+        if code not in stock_data: stock_data[code] = {"close":[],"vol":[]}
         stock_data[code]["close"].append(float(cl))
-        stock_data[code]["volume"].append(float(vol))
+        stock_data[code]["vol"].append(float(vol))
     logger.info(f"Loaded {len(stock_data)} stocks")
     
     results = []
