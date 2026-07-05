@@ -2,11 +2,8 @@ name: Weekly Model Training
 
 on:
   schedule:
-    - cron: "0 18 * * 5"   # 周六 02:00 北京时间
+    - cron: "0 18 * * 5"
   workflow_dispatch:
-
-env:
-  PYTHON_VERSION: "3.12"
 
 jobs:
   train:
@@ -15,20 +12,21 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-python@v5
         with:
-          python-version: ${{ env.PYTHON_VERSION }}
-          cache: pip
+          python-version: "3.12"
 
       - name: Install deps
-        run: pip install pandas numpy psycopg2-binary
+        run: pip install --quiet pandas numpy psycopg2-binary
 
-      - name: Weekly model iteration
+      - name: Weekly iteration
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
         run: |
-          echo "=== Weekly model training placeholder ==="
-          echo "Training new model with latest CSI300 data..."
-          echo "Evaluating vs current model..."
-          echo "Auto-switch if win rate improved"
+          if [ -z "$DATABASE_URL" ]; then
+            echo "SKIP: DATABASE_URL not configured"
+            exit 0
+          fi
+          echo "=== Weekly model training ==="
+          echo "Placeholder: full AlphaGPT training TBD"
+          echo "Complete"

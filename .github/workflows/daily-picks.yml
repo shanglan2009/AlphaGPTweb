@@ -2,11 +2,8 @@ name: Daily Stock Picks
 
 on:
   schedule:
-    - cron: "0 8 * * 1-5"   # 北京时间 16:00
+    - cron: "0 8 * * 1-5"
   workflow_dispatch:
-
-env:
-  PYTHON_VERSION: "3.12"
 
 jobs:
   generate:
@@ -15,16 +12,19 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-python@v5
         with:
-          python-version: ${{ env.PYTHON_VERSION }}
-          cache: pip
+          python-version: "3.12"
 
       - name: Install deps
-        run: pip install pandas psycopg2-binary numpy
+        run: pip install --quiet pandas psycopg2-binary numpy
 
-      - name: Generate daily picks
+      - name: Generate picks
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
-        run: python python/model/inference_csi300.py
+        run: |
+          if [ -z "$DATABASE_URL" ]; then
+            echo "SKIP: DATABASE_URL not configured"
+            exit 0
+          fi
+          python python/model/inference_csi300.py

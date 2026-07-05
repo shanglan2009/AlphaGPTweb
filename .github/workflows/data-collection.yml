@@ -8,7 +8,7 @@ on:
 jobs:
   collect:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
 
     steps:
       - uses: actions/checkout@v4
@@ -17,17 +17,46 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Install dependencies
+      - name: Setup
         run: |
-          pip install --quiet pandas psycopg2-binary numpy baostock
-          python -c "import baostock; print('baostock OK')"
+          echo "=== Python ==="
+          python --version
+          echo "=== Install deps ==="
+          pip install --quiet pandas psycopg2-binary numpy baostock 2>&1
+          echo "=== Verify imports ==="
+          python -c "import baostock; print('baostock', baostock.__version__ if hasattr(baostock,'__version__') else 'OK')"
           python -c "import psycopg2; print('psycopg2 OK')"
+          python -c "import numpy; print('numpy', numpy.__version__)"
+          echo "=== DATABASE_URL ==="
+          if [ -z "$DATABASE_URL" ]; then
+            echo "WARNING: DATABASE_URL secret is NOT set!"
+            echo "Go to Settings -> Secrets -> Actions -> add DATABASE_URL"
+          else
+            echo "DATABASE_URL is configured (${#DATABASE_URL} chars)"
+          fi
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
 
-      - name: Collect CSI300 data + Generate picks
+      - name: Collect data
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
         run: |
-          echo "=== Step 1: Data Collection ==="
+          if [ -z "$DATABASE_URL" ]; then
+            echo "SKIP: DATABASE_URL not configured"
+            exit 0
+          fi
+          echo "=== Starting data collection ==="
           python python/data_pipeline/collect_csi300.py
-          echo "=== Step 2: Inference ==="
+          echo "Exit code: $?"
+
+      - name: Generate picks
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: |
+          if [ -z "$DATABASE_URL" ]; then
+            echo "SKIP: DATABASE_URL not configured"
+            exit 0
+          fi
+          echo "=== Starting inference ==="
           python python/model/inference_csi300.py
+          echo "Exit code: $?"
