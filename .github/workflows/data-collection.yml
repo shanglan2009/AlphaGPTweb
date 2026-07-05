@@ -2,11 +2,8 @@ name: Daily Data Collection (CSI300)
 
 on:
   schedule:
-    - cron: "30 7 * * 1-5"   # 北京时间 15:30
+    - cron: "30 7 * * 1-5"
   workflow_dispatch:
-
-env:
-  PYTHON_VERSION: "3.12"
 
 jobs:
   collect:
@@ -18,18 +15,19 @@ jobs:
 
       - uses: actions/setup-python@v5
         with:
-          python-version: ${{ env.PYTHON_VERSION }}
-          cache: pip
+          python-version: "3.12"
 
-      - name: Install deps
-        run: pip install pandas requests python-dotenv psycopg2-binary baostock numpy
+      - name: Install dependencies
+        run: |
+          pip install --quiet pandas psycopg2-binary numpy baostock
+          python -c "import baostock; print('baostock OK')"
+          python -c "import psycopg2; print('psycopg2 OK')"
 
-      - name: Collect CSI300 daily data
+      - name: Collect CSI300 data + Generate picks
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
-        run: python python/data_pipeline/collect_csi300.py
-
-      - name: Run inference
-        env:
-          DATABASE_URL: ${{ secrets.DATABASE_URL }}
-        run: python python/model/inference_csi300.py
+        run: |
+          echo "=== Step 1: Data Collection ==="
+          python python/data_pipeline/collect_csi300.py
+          echo "=== Step 2: Inference ==="
+          python python/model/inference_csi300.py
