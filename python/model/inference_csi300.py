@@ -40,7 +40,7 @@ def score(close, volume):
     if len(c) < 20: return None
     mom5 = (c[-1]-c[-6])/(c[-6]+1e-9) if len(c)>=6 else 0
     mom20 = (c[-1]-c[-21])/(c[-21]+1e-9) if len(c)>=21 else 0
-    rets = np.diff(c[-6:])/(c[-7:-1]+1e-9) if len(c)>=7 else [0]
+    rets = np.diff(c[-6:]) / (c[-6:-1] + 1e-9) if len(c)>=7 else [0]
     vol5 = np.std(rets) if len(rets)>0 else 0
     vol_ma5 = np.mean(v[-6:-1]) if len(v)>=6 else v[-1]+1e-9
     vol_ratio = min(v[-1]/(vol_ma5+1e-9), 5)
