@@ -58,7 +58,7 @@ def run():
     today = datetime.now().strftime("%Y-%m-%d")
     cur.execute("DELETE FROM daily_picks WHERE date = %s::date", (today,))
     
-    cur.execute("SELECT ts_code, trade_date, close, volume FROM daily_ohlcv WHERE trade_date >= CURRENT_DATE - INTERVAL '60 days' ORDER BY ts_code, trade_date")
+    cur.execute("SELECT ts_code, trade_date, close, vol FROM daily_ohlcv WHERE trade_date >= CURRENT_DATE - INTERVAL '60 days' ORDER BY ts_code, trade_date")
     stock_data = {}
     for code, dt, cl, vol in cur.fetchall():
         if code not in stock_data: stock_data[code] = {"close":[],"volume":[]}
@@ -68,7 +68,7 @@ def run():
     
     results = []
     for code, data in stock_data.items():
-        s = score(data["close"], data["volume"])
+        s = score(data["close"], data["vol"])
         if s:
             name = CSI300_MAP.get(code, code)
             results.append({"stock_code":code,"stock_name":name,**s,"model_version":"v1"})
